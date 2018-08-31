@@ -1,0 +1,166 @@
+from black_jack import PokerAgent
+import numpy as np
+import matplotlib.pyplot as plt
+from learn_tree import Memory
+from keras.models import Model
+from keras.layers import Dense, Input
+
+
+class DQNAgent:
+    def __init__(self, state_size, action_size):
+        self.state_size = state_size
+        self.action_size = action_size
+        self.double_dqn = True
+        self.soft_update = True
+        # soft update for target model
+        self.tau = 0.005
+        # episolon greedy exploration
+        self.epsilon = 0.01
+        self.epsilon_min = 0.01
+        self.epsilon_decay = 0.99
+        self.gamma = 0.9
+        self.batch_size = 64
+        # sum_tree memory
+        self.memory = Memory(10000)
+        self.model = self.create_model()
+        self.target_model = self.create_model()
+
+    def create_model(self):
+        input_ = Input(shape=(self.state_size,))
+        hidden_layer_1 = Dense(units=128, activation='relu', input_shape=(self.state_size,))(input_)
+        hidden_layer_2 = Dense(units=64, activation='relu', input_shape=(128,))(hidden_layer_1)
+        hidden_layer_3 = Dense(units=16, activation='relu', input_shape=(64,))(hidden_layer_2)
+        output = Dense(units=self.action_size, activation='linear', input_shape=(16,))(hidden_layer_3)
+        model = Model(inputs=input_, outputs=output)
+        model.compile(optimizer='adam', loss='mse')
+        # return value of each action
+        return model
+
+    def remember(self, cur_state, action, next_state, reward, done):
+        self.memory.store(np.array([cur_state, action, next_state, reward, done], dtype=object))
+
+    def sample(self, batch_size):
+        return self.memory.sample(batch_size)
+
+    def act(self, cur_state):
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+        if np.random.rand() < self.epsilon:
+            return np.random.randint(0, 3)
+        # its actually the predicted value of each action
+        predicted_action = self.model.predict(cur_state)
+        return np.argmax(predicted_action[0])
+
+    def replay(self):
+        picked_idx, picked_trajectory, is_weights = self.sample(self.batch_size)
+        abs_td_error = []
+        for (cur_state, action_, next_state, reward_, done), is_w in zip(picked_trajectory, is_weights):
+            target = self.model.predict(cur_state)
+            td_eval = tuple(target[0])
+            if not done:
+                if self.double_dqn:
+                    predicted_action = np.argmax(self.model.predict(next_state)[0])
+                    target_q = self.target_model.predict(next_state)[0][predicted_action]
+                    target[0][action_] = reward_ + self.gamma * target_q
+                else:
+                    target_q = self.target_model.predict(next_state)[0]
+                    target[0][action_] = reward_ + self.gamma * max(target_q)
+
+                td_error = np.mean(abs(target[0] - np.array(td_eval)))
+                abs_td_error.append(td_error)
+            else:
+                target[0][action_] = reward_
+                td_error = np.mean(abs(target[0] - np.array(td_eval)))
+                abs_td_error.append(td_error)
+
+            self.model.fit(cur_state, target, sample_weight=np.array(is_w), verbose=0)
+        assert len(picked_idx) == len(abs_td_error)
+        self.memory.batch_update(picked_idx, np.array(abs_td_error))
+
+    def update_target_model(self, total_step):
+        if self.soft_update:
+            weights = self.model.get_weights()
+            target_weights = self.target_model.get_weights()
+            for i in range(len(target_weights)):
+                target_weights[i] = weights[i] * self.tau + target_weights[i] * (1 - self.tau)
+            self.target_model.set_weights(target_weights)
+        else:
+            if total_step % 10 == 0:
+                weights = self.model.get_weights()
+                target_weights = self.target_model.get_weights()
+                for i in range(len(target_weights)):
+                    target_weights[i] = weights[i]
+                self.target_model.set_weights(target_weights)
+
+    def save(self, file):
+        self.model.save_weights(file)
+
+    def load(self, file):
+        self.model.load_weights(file)
+        self.target_model.load_weights(file)
+
+
+def gameloop():
+    env = PokerAgent()
+    state_size_,action_size_ = 3, 3
+    dqn_agent = DQNAgent(state_size_, action_size_)
+    # dqn_agent.load('poke_model_per_d.h5')
+    n_episode = 15000
+    n_steps = 10
+    stand, hit, double = 0, 0, 0
+    bj_win = 0
+    money = 10000
+    cur_money = money
+    total_step = 0
+    mon = []
+    # start training
+    for episode_i in range(n_episode):
+        cur_state_ = env.reset()
+        for step_i in range(n_steps):
+            total_step += 1
+            cur_state_ = np.reshape(cur_state_, [1, dqn_agent.state_size])
+            if total_step > dqn_agent.memory.sum_tree.capacity:
+                action = dqn_agent.act(cur_state_)
+            else:
+                action = np.random.randint(0, 3)
+            if action == 0:
+                stand += 1
+            elif action == 1:
+                hit += 1
+            elif action == 2:
+                double += 1
+                print("double:", cur_state_)
+            observation, reward_, done_, _ = env.step(action)
+            observation = np.reshape(observation, [1, dqn_agent.state_size])
+            dqn_agent.remember(cur_state_, action, observation, reward_ / 2, done_)
+            if total_step > dqn_agent.memory.sum_tree.capacity:
+                dqn_agent.replay()
+                dqn_agent.update_target_model(total_step)
+            cur_state_ = observation
+            if done_:
+                if reward_ == 1.5:
+                    bj_win += 1
+                money += reward_
+                break
+
+        if episode_i % 100 == 0:
+            money_change = money - cur_money
+            mon.append(money_change)
+            dqn_agent.save('poke_model_per_d.h5')
+            print(f"stand{stand}")
+            print(f"hit{hit}")
+            print(f"double{double}")
+            stand, hit, double = 0, 0, 0
+            print("episode {}/{}, money_change:{}, e:{}".format(episode_i, n_episode, money_change, dqn_agent.epsilon))
+            cur_money = money
+            print()
+            print()
+    plt.plot(mon)
+    plt.show()
+    print(money)
+    print(bj_win)
+
+
+if __name__ == '__main__':
+    gameloop()
+    
