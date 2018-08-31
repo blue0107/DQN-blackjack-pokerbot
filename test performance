@@ -1,0 +1,64 @@
+from black_jack import PokerAgent
+from test import DQNAgent
+from lllll import DQNAgent_2
+from note import draw_graph
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def game_loop():
+    env = PokerAgent()
+    state_size_, action_size_ = 3, 3
+    dqn_agent = DQNAgent(state_size_, action_size_)
+    dqn_agent.load('poke_model_per_d.h5')
+    dqn_agent_2 = DQNAgent_2(state_size_, 2)
+    dqn_agent_2.load('poke_model_orig.h5')
+    dqn_agent.epsilon, dqn_agent_2.epsilon = 0, 0
+    n_episode = 10000
+    n_steps = 10
+    stand, hit, double, bj_win = 0, 0, 0, 0
+    money = 10000
+    cur_money = money
+    mon = []
+    for episode_i in range(n_episode):
+        cur_state_ = env.reset()
+        for step_i in range(n_steps):
+            cur_state_ = np.reshape(cur_state_, [1, dqn_agent.state_size])
+            if step_i == 0:
+                action = dqn_agent.act(cur_state_)
+            else:
+                action = dqn_agent_2.act(cur_state_)
+            if action == 0:
+                stand += 1
+            elif action == 1:
+                hit += 1
+            elif action == 2:
+                double += 1
+                print(f"double:{cur_state_}")
+            observation, reward_, done_, _ = env.step(action)
+            observation = np.reshape(observation, [1, dqn_agent.state_size])
+            cur_state_ = observation
+            if done_:
+                if reward_ == 1.5:
+                    bj_win += 1
+                money += reward_
+                break
+        if episode_i % 100 == 0:
+            money_change = money - cur_money
+            mon.append(money_change)
+            cur_money = money
+            print("episode {}/{}, money change:{}, e:{}".format(episode_i, n_episode, money_change, dqn_agent.epsilon))
+            print()
+            print()
+
+    print(f"stand rate{stand / (stand + hit + double)}")
+    print(f"hit rate{hit / (stand + hit + double)}")
+    print(f"double rate{double / (stand + hit + double)}")
+    plt.plot(mon)
+    plt.show()
+    print(money)
+    print(bj_win)
+
+
+if __name__ == '__main__':
+    game_loop()
